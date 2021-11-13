@@ -11,14 +11,25 @@
 
 static DEFINE_PER_CPU(atomic_t, trace_object_event_disable);
 static struct trace_event_file event_trace_file;
-static const int max_args_num = 6;
 static const int max_obj_pool = 10;
 static atomic_t trace_object_ref;
 static int exit_trace_object(void);
 static int init_trace_object(void);
 
+struct objtrace_trigger_data {
+	struct ftrace_event_field *field;
+	long offset;
+	int type_size;
+};
+
+struct objtrace_fetch_type {
+	char *name;
+	int type_size;
+};
+
 struct object_instance {
 	void *object;
+	int obj_type_size;
 	struct freelist_node freelist;
 };
 
@@ -59,8 +70,7 @@ static bool object_empty(void)
 	return ret;
 }
 
-
-static void set_trace_object(void *obj)
+static void set_trace_object(void *obj, int type_size)
 {
 	struct freelist_node *fn;
 	struct object_instance *ins;
@@ -79,6 +89,7 @@ static void set_trace_object(void *obj)
 
 	ins = container_of(fn, struct object_instance, freelist);
 	ins->object = obj;
+	ins->obj_type_size = type_size;
 
 	freelist_add(&ins->freelist, &obj_pool->customer_freelist);
 	atomic_inc(&obj_pool->nobject);
@@ -135,7 +146,7 @@ out:
 }
 
 static void submit_trace_object(unsigned long ip, unsigned long parent_ip,
-				 unsigned long object)
+				 unsigned long object, unsigned long value)
 {
 
 	struct trace_buffer *buffer;
@@ -152,6 +163,7 @@ static void submit_trace_object(unsigned long ip, unsigned long parent_ip,
 	entry->ip                       = ip;
 	entry->parent_ip                = parent_ip;
 	entry->object			= object;
+	entry->value			= value;
 
 	event_trigger_unlock_commit(&event_trace_file, buffer, event,
 		entry, pc);
@@ -161,10 +173,11 @@ static void
 trace_object_events_call(unsigned long ip, unsigned long parent_ip,
 		struct ftrace_ops *op, struct ftrace_regs *fregs)
 {
-	struct pt_regs *pt_regs = ftrace_get_regs(fregs);
-	unsigned long obj;
+	struct freelist_node *node;
+	struct object_instance *inst;
+	unsigned long val = 0;
 	long disabled;
-	int cpu, n;
+	int cpu;
 
 	preempt_disable_notrace();
 
@@ -177,10 +190,14 @@ trace_object_events_call(unsigned long ip, unsigned long parent_ip,
 	if (object_empty())
 		goto out;
 
-	for (n = 0; n < max_args_num; n++) {
-		obj = regs_get_kernel_argument(pt_regs, n);
-		if (object_exist((void *)obj))
-			submit_trace_object(ip, parent_ip, obj);
+	node = obj_pool->customer_freelist.head;
+
+	while (node) {
+		inst = container_of(node, struct object_instance, freelist);
+		if (copy_from_kernel_nofault(&val, inst->object, inst->obj_type_size))
+			goto out;
+		submit_trace_object(ip, parent_ip, (unsigned long)inst->object, val);
+		node = node->next;
 	}
 
 out:
@@ -198,12 +215,14 @@ trace_object_trigger(struct event_trigger_data *data,
 		   struct trace_buffer *buffer,  void *rec,
 		   struct ring_buffer_event *event)
 {
+	struct objtrace_trigger_data *obj_data = data->private_data;
+	struct ftrace_event_field *field;
+	void *obj, *val = NULL;
 
-	struct ftrace_event_field *field = data->private_data;
-	void *obj = NULL;
-
-	memcpy(&obj, rec + field->offset, sizeof(obj));
-	set_trace_object(obj);
+	field = obj_data->field;
+	memcpy(&val, rec + field->offset, sizeof(val));
+	obj = val + obj_data->offset;
+	set_trace_object(obj, obj_data->type_size);
 }
 
 static void
@@ -350,6 +369,22 @@ static void unregister_object_trigger(char *glob, struct event_trigger_ops *ops,
 	}
 }
 
+static const struct objtrace_fetch_type objtrace_fetch_types[] = {
+	{"u8", 1},
+	{"s8", 1},
+	{"x8", 1},
+	{"u16", 2},
+	{"s16", 2},
+	{"x16", 2},
+	{"u32", 4},
+	{"s32", 4},
+	{"x32", 4},
+	{"u64", 8},
+	{"s64", 8},
+	{"x64", 8},
+	{}
+};
+
 static int
 event_object_trigger_callback(struct event_command *cmd_ops,
 		       struct trace_event_file *file,
@@ -357,13 +392,15 @@ event_object_trigger_callback(struct event_command *cmd_ops,
 {
 	struct event_trigger_data *trigger_data;
 	struct event_trigger_ops *trigger_ops;
+	struct objtrace_trigger_data *obj_data;
 	struct trace_event_call *call;
 	struct ftrace_event_field *field;
 	char *objtrace_cmd;
+	long offset = 0;
 	char *trigger = NULL;
-	char *arg;
+	char *arg, *type, *tr, *tr_end;
 	char *number;
-	int ret;
+	int ret, i, type_size = 0;
 
 	ret = -EINVAL;
 	if (!param)
@@ -386,6 +423,38 @@ event_object_trigger_callback(struct event_command *cmd_ops,
 	arg = strsep(&trigger, ":");
 	if (!arg)
 		goto out;
+
+	tr = strchr(arg, '(');
+	/* now force to get the value of the val. */
+	if (!tr)
+		goto out;
+	tr_end = strchr(tr, ')');
+	if (!tr_end)
+		goto out;
+	*tr++ = '\0';
+	*tr_end = '\0';
+	ret = kstrtol(arg, 0, &offset);
+	if (ret)
+		goto out;
+	arg = tr;
+	ret = -EINVAL;
+	if (!trigger)
+		goto out;
+
+	type = strsep(&trigger, ":");
+	if (!type)
+		goto out;
+	for (i = 0; objtrace_fetch_types[i].name; i++) {
+		if (strcmp(objtrace_fetch_types[i].name, type) == 0) {
+			type_size = objtrace_fetch_types[i].type_size;
+			break;
+		}
+	}
+
+	if (type_size == 0)
+		goto out;
+
+
 	call = file->event_call;
 	field = trace_find_event_field(call, arg);
 	if (!field)
@@ -394,19 +463,30 @@ event_object_trigger_callback(struct event_command *cmd_ops,
 	trigger_ops = cmd_ops->get_trigger_ops(cmd, trigger);
 
 	ret = -ENOMEM;
-	trigger_data = kzalloc(sizeof(*trigger_data), GFP_KERNEL);
-	if (!trigger_data)
+	obj_data = kzalloc(sizeof(*obj_data), GFP_KERNEL);
+	if (!obj_data)
 		goto out;
+
+	obj_data->field = field;
+	obj_data->offset = offset;
+	obj_data->type_size = type_size;
+
+	trigger_data = kzalloc(sizeof(*trigger_data), GFP_KERNEL);
+	if (!trigger_data) {
+		kfree(obj_data);
+		goto out;
+	}
 
 	trigger_data->count = -1;
 	trigger_data->ops = trigger_ops;
 	trigger_data->cmd_ops = cmd_ops;
-	trigger_data->private_data = field;
+	trigger_data->private_data = obj_data;
 	INIT_LIST_HEAD(&trigger_data->list);
 	INIT_LIST_HEAD(&trigger_data->named_list);
 
 	if (glob[0] == '!') {
 		cmd_ops->unreg(glob+1, trigger_ops, trigger_data, file);
+		kfree(obj_data);
 		kfree(trigger_data);
 		ret = 0;
 		goto out;
@@ -461,6 +541,7 @@ event_object_trigger_callback(struct event_command *cmd_ops,
  out_free:
 	if (cmd_ops->set_filter)
 		cmd_ops->set_filter(NULL, trigger_data, NULL);
+	kfree(obj_data);
 	kfree(trigger_data);
 	goto out;
 }
