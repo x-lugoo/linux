@@ -5627,6 +5627,9 @@ static const char readme_msg[] =
 	"\t            enable_hist:<system>:<event>\n"
 	"\t            disable_hist:<system>:<event>\n"
 #endif
+#ifdef CONFIG_TRACE_OBJECT
+	"\t            objtrace:add:obj[:count][if <filter>]\n"
+#endif
 #ifdef CONFIG_STACKTRACE
 	"\t\t    stacktrace\n"
 #endif
@@ -9272,6 +9275,9 @@ static struct trace_array *trace_array_create(const char *name)
 	if (ftrace_allocate_ftrace_ops(tr) < 0)
 		goto out_free_tr;
 
+	if (allocate_objtrace_data(tr) < 0)
+		goto out_free_tr;
+
 	ftrace_init_trace_array(tr);
 
 	init_trace_flags_index(tr);
@@ -9291,6 +9297,7 @@ static struct trace_array *trace_array_create(const char *name)
 
  out_free_tr:
 	ftrace_free_ftrace_ops(tr);
+	free_objtrace_data(tr);
 	free_trace_buffers(tr);
 	free_cpumask_var(tr->tracing_cpumask);
 	kfree(tr->name);
@@ -9384,6 +9391,7 @@ static int __remove_instance(struct trace_array *tr)
 	event_trace_del_tracer(tr);
 	ftrace_clear_pids(tr);
 	ftrace_destroy_function_files(tr);
+	free_objtrace_data(tr);
 	tracefs_remove(tr->dir);
 	free_percpu(tr->last_func_repeats);
 	free_trace_buffers(tr);
@@ -10117,6 +10125,9 @@ __init static int tracer_alloc_buffers(void)
 		MEM_FAIL(1, "tracer: failed to allocate ring buffer!\n");
 		goto out_free_savedcmd;
 	}
+
+	if (allocate_objtrace_data(&global_trace))
+		goto out_free_savedcmd;
 
 	if (global_trace.buffer_disabled)
 		tracing_off();
