@@ -54,6 +54,7 @@ enum trace_type {
 	TRACE_TIMERLAT,
 	TRACE_RAW_DATA,
 	TRACE_FUNC_REPEATS,
+	TRACE_OBJECT,
 
 	__TRACE_LAST_TYPE,
 };
@@ -363,6 +364,9 @@ struct trace_array {
 	cpumask_var_t		tracing_cpumask; /* only trace on set CPUs */
 	int			ref;
 	int			trace_ref;
+#ifdef CONFIG_TRACE_OBJECT
+	struct objtrace_data	*obj_data;
+#endif
 #ifdef CONFIG_FUNCTION_TRACER
 	struct ftrace_ops	*ops;
 	struct trace_pid_list	__rcu *function_pids;
@@ -471,6 +475,7 @@ extern void __ftrace_bad_type(void);
 			  TRACE_GRAPH_RET);		\
 		IF_ASSIGN(var, ent, struct func_repeats_entry,		\
 			  TRACE_FUNC_REPEATS);				\
+		IF_ASSIGN(var, ent, struct trace_object_entry, TRACE_OBJECT);\
 		__ftrace_bad_type();					\
 	} while (0)
 
@@ -1536,6 +1541,16 @@ static inline int register_trigger_hist_cmd(void) { return 0; }
 static inline int register_trigger_hist_enable_disable_cmds(void) { return 0; }
 #endif
 
+#ifdef CONFIG_TRACE_OBJECT
+extern int register_trigger_object_cmd(void);
+extern int allocate_objtrace_data(struct trace_array *tr);
+extern void free_objtrace_data(struct trace_array *tr);
+#else
+static inline int register_trigger_object_cmd(void) { return 0; }
+static inline int allocate_objtrace_data(struct trace_array *tr) { return 0; }
+static inline void free_objtrace_data(struct trace_array *tr) { };
+#endif
+
 extern int register_trigger_cmds(void);
 extern void clear_event_triggers(struct trace_array *tr);
 
@@ -1611,6 +1626,12 @@ extern bool event_trigger_check_remove(const char *glob);
 extern bool event_trigger_empty_param(const char *param);
 extern int event_trigger_separate_filter(char *param_and_filter, char **param,
 					 char **filter, bool param_required);
+extern int register_trigger(char *glob,
+			struct event_trigger_data *data,
+			struct trace_event_file *file);
+extern void unregister_trigger(char *glob,
+			struct event_trigger_data *test,
+			struct trace_event_file *file);
 extern struct event_trigger_data *
 event_trigger_alloc(struct event_command *cmd_ops,
 		    char *cmd,
