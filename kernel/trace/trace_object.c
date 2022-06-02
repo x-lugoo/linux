@@ -16,8 +16,14 @@ static const int max_args_num = 6;
 static void exit_trace_object(struct trace_array *tr);
 static int init_trace_object(struct trace_array *tr);
 
+/*
+ * get the offset from the special object and
+ * the type size of the value
+ */
 struct object_instance {
 	void *obj;
+	int obj_offset;
+	int obj_value_type_size;
 	struct trace_array *tr;
 };
 
@@ -25,7 +31,21 @@ struct object_instance {
 struct objtrace_trigger_data {
 	struct ftrace_event_field *field;
 	char objtrace_cmd[OBJTRACE_CMD_LEN];
+	int obj_offset;
+	int obj_value_type_size;
 	struct trace_array *tr;
+};
+
+/* get the type size for the special object */
+struct objtrace_fetch_type {
+	char *name;
+	int type_size;
+};
+
+enum objattr {
+	OBJ_OFFSET,
+	OBJ_VAL_TYPE_SIZE,
+	MAX_OBJ_ATTR
 };
 
 /* objtrace data with fops and objtrace_instances */
@@ -67,6 +87,35 @@ static bool object_exist(void *obj, struct trace_array *tr)
 	return false;
 }
 
+static int get_object_attr(void *obj, int objattr,
+		struct trace_array *tr, int *result)
+{
+	int i, max;
+	struct objtrace_data *obj_data;
+
+	obj_data = get_obj_data(tr);
+	if (!obj_data)
+		return -EINVAL;
+
+	max = READ_ONCE(obj_data->num_traced_obj);
+	smp_rmb();
+	for (i = 0; i < max; i++) {
+		if (obj_data->traced_obj[i].obj == obj) {
+			switch (objattr) {
+			case OBJ_OFFSET:
+				*result = obj_data->traced_obj[i].obj_offset;
+				return 0;
+			case OBJ_VAL_TYPE_SIZE:
+				*result = obj_data->traced_obj[i].obj_value_type_size;
+				return 0;
+			default:
+				return -EINVAL;
+			}
+		}
+	}
+	return -EINVAL;
+}
+
 static bool object_empty(struct trace_array *tr)
 {
 	struct objtrace_data *obj_data;
@@ -78,7 +127,8 @@ static bool object_empty(struct trace_array *tr)
 	return !READ_ONCE(obj_data->num_traced_obj);
 }
 
-static void set_trace_object(void *obj, struct trace_array *tr)
+static void set_trace_object(void *obj, int obj_offset,
+			int obj_value_type_size, struct trace_array *tr)
 {
 	unsigned long flags;
 	struct object_instance *obj_ins;
@@ -103,6 +153,8 @@ static void set_trace_object(void *obj, struct trace_array *tr)
 	}
 	obj_ins = &obj_data->traced_obj[READ_ONCE(obj_data->num_traced_obj)];
 	obj_ins->obj = obj;
+	obj_ins->obj_value_type_size = obj_value_type_size;
+	obj_ins->obj_offset = obj_offset;
 	obj_ins->tr = tr;
 	/* make sure the num_traced_obj update always appears after traced_obj update */
 	smp_wmb();
@@ -112,7 +164,7 @@ out:
 }
 
 static void submit_trace_object(unsigned long ip, unsigned long parent_ip,
-				 unsigned long object, struct trace_array *tr)
+		unsigned long object, unsigned long value, struct trace_array *tr)
 {
 
 	struct trace_buffer *buffer = tr->array_buffer.buffer;
@@ -129,8 +181,41 @@ static void submit_trace_object(unsigned long ip, unsigned long parent_ip,
 	entry->ip                       = ip;
 	entry->parent_ip                = parent_ip;
 	entry->object			= object;
+	entry->value			= value;
 
 	trace_buffer_unlock_commit(tr, buffer, event, trace_ctx);
+}
+
+static inline long get_object_value(unsigned long *val, void *obj, int type_size)
+{
+	char tmp[sizeof(u64)];
+	long ret = 0;
+
+	ret = copy_from_kernel_nofault(tmp, obj, sizeof(tmp));
+	if (ret)
+		return ret;
+	switch (type_size) {
+	case 1: {
+		*val = (unsigned long)*(u8 *)tmp;
+		break;
+	}
+	case 2: {
+		*val = (unsigned long)*(u16 *)tmp;
+		break;
+	}
+	case 4: {
+		*val = (unsigned long)*(u32 *)tmp;
+		break;
+	}
+	case 8: {
+		*val = (unsigned long)*(u64 *)tmp;
+		break;
+	}
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static void
@@ -140,7 +225,8 @@ trace_object_events_call(unsigned long ip, unsigned long parent_ip,
 	struct pt_regs *pt_regs = ftrace_get_regs(fregs);
 	struct trace_array *tr = op->private;
 	struct trace_array_cpu *data;
-	unsigned long obj;
+	int ret, val_type_size, obj_offset;
+	unsigned long obj, val;
 	long disabled;
 	int cpu, n;
 
@@ -154,8 +240,21 @@ trace_object_events_call(unsigned long ip, unsigned long parent_ip,
 			goto out;
 		for (n = 0; n < max_args_num; n++) {
 			obj = regs_get_kernel_argument(pt_regs, n);
-			if (object_exist((void *)obj, tr))
-				submit_trace_object(ip, parent_ip, obj, tr);
+			if (object_exist((void *)obj, tr)) {
+				ret = get_object_attr((void *)obj, OBJ_OFFSET,
+						tr, &obj_offset);
+				if (unlikely(ret) < 0)
+					goto out;
+				ret = get_object_attr((void *)obj, OBJ_VAL_TYPE_SIZE,
+						tr, &val_type_size);
+				if (unlikely(ret) < 0)
+					goto out;
+				if (get_object_value(&val, (void *)(obj + obj_offset),
+							val_type_size))
+					continue;
+
+				submit_trace_object(ip, parent_ip, obj, val, tr);
+			}
 		/* The parameters of a function may match multiple objects */
 		}
 	}
@@ -176,8 +275,26 @@ trace_object_trigger(struct event_trigger_data *data,
 
 	field = obj_data->field;
 	memcpy(&obj, rec + field->offset, sizeof(obj));
-	set_trace_object(obj, tr);
+	/* set the offset from the special object and the type size of the value*/
+	set_trace_object(obj, obj_data->obj_offset,
+			obj_data->obj_value_type_size, tr);
 }
+
+static const struct objtrace_fetch_type objtrace_fetch_types[] = {
+	{"u8", 1},
+	{"s8", 1},
+	{"x8", 1},
+	{"u16", 2},
+	{"s16", 2},
+	{"x16", 2},
+	{"u32", 4},
+	{"s32", 4},
+	{"x32", 4},
+	{"u64", 8},
+	{"s64", 8},
+	{"x64", 8},
+	{NULL, 0},
+};
 
 static void
 trace_object_trigger_free(struct event_trigger_data *data)
@@ -213,14 +330,25 @@ static int
 event_trigger_print(const char *name, struct seq_file *m,
 		void *data, char *filter_str, void *objtrace_data)
 {
+	int i;
 	long count = (long)data;
 	struct objtrace_trigger_data *obj_data = objtrace_data;
+	const char *value_type_name;
 
 	seq_puts(m, name);
 
 	seq_printf(m, ":%s", obj_data->objtrace_cmd);
 	seq_printf(m, ":%s", obj_data->field->name);
+	if (obj_data->obj_offset)
+		seq_printf(m, ",0x%x", obj_data->obj_offset);
 
+	for (i = 0; objtrace_fetch_types[i].name; i++) {
+		if (objtrace_fetch_types[i].type_size == obj_data->obj_value_type_size) {
+			value_type_name = objtrace_fetch_types[i].name;
+			break;
+		}
+	}
+	seq_printf(m, ":%s", value_type_name);
 	if (count == -1)
 		seq_puts(m, ":unlimited");
 	else
@@ -303,16 +431,18 @@ event_object_trigger_parse(struct event_command *cmd_ops,
 	struct event_trigger_data *trigger_data;
 	struct objtrace_trigger_data *obj_data;
 	struct ftrace_event_field *field;
-	char *objtrace_cmd, *arg;
-	char *param, *filter;
-	int ret;
+	char *objtrace_cmd, *obj;
+	char *param, *filter, *str, *type;
+	int ret, i, def_type_size, obj_value_type_size = 0;
+	char *tmp_saved_param;
+	long offset = 0;
 	bool remove;
 
 	remove = event_trigger_check_remove(glob);
 
 	/*
 	 * separate the param and the filter:
-	 * objtrace:add:OBJ[:COUNT] [if filter]
+	 * objtrace:add:OBJ[,OFFS][:TYPE][:COUNT] [if filter]
 	 */
 	ret = event_trigger_separate_filter(param_and_filter, &param, &filter, true);
 	if (ret)
@@ -324,11 +454,44 @@ event_object_trigger_parse(struct event_command *cmd_ops,
 		return -EINVAL;
 	}
 
-	arg = strsep(&param, ":");
-	if (!arg)
+	obj = strsep(&param, ":");
+	if (!obj)
 		return -EINVAL;
 
-	field = trace_find_event_field(file->event_call, arg);
+	str = strchr(obj, ',');
+	if (!str)
+		offset = 0;
+	else {
+		*str++ = '\0';
+		ret = kstrtol(str, 0, &offset);
+		if (ret)
+			return -EINVAL;
+	}
+	def_type_size = sizeof(void *);
+	if (!param) {
+		obj_value_type_size = def_type_size;
+		goto skip_get_type;
+	}
+	tmp_saved_param = param;
+	type = strsep(&param, ":");
+	if (!type)
+		obj_value_type_size = def_type_size;
+	/* if this is the trigger count */
+	else if (isdigit(type[0])) {
+		obj_value_type_size = def_type_size;
+		param = tmp_saved_param;
+	} else {
+		for (i = 0; objtrace_fetch_types[i].name; i++) {
+			if (strcmp(objtrace_fetch_types[i].name, type) == 0) {
+				obj_value_type_size = objtrace_fetch_types[i].type_size;
+				break;
+			}
+		}
+	}
+	if (!obj_value_type_size)
+		return -EINVAL;
+skip_get_type:
+	field = trace_find_event_field(file->event_call, obj);
 	if (!field)
 		return -EINVAL;
 
@@ -345,6 +508,8 @@ event_object_trigger_parse(struct event_command *cmd_ops,
 		return -ENOMEM;
 
 	obj_data->field = field;
+	obj_data->obj_offset = offset;
+	obj_data->obj_value_type_size = obj_value_type_size;
 	obj_data->tr = file->tr;
 	snprintf(obj_data->objtrace_cmd, OBJTRACE_CMD_LEN, objtrace_cmd);
 
