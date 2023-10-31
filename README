@@ -1,3 +1,10 @@
+
+Notes: The presentation at CLK conference covered version 15, while objtrace-v16-pre1 is in the development and testing phase.
+When setting up the objtrace trigger, the parsing method will be different. Please use the V15 version for testing and validation.
+
+Notes: CLK大会上分享的是v15版本， objtrace-v16-pre1是开发和测试阶段，在设置objtrace trigger的时候，
+解析方法会不一样，请使用V15版本进行测试验证。
+
 Linux kernel
 ============
 
