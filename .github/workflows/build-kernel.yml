@@ -51,30 +51,26 @@ jobs:
       - name: Prepare Build Directory
         run: |
           make mrproper
-          mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
+          mkdir -p ${{ env.BUILD_OUTPUT_DIR }} # no used now
 
       - name: Configure Kernel
         run: |
           cp ${{ env.KERNEL_CONFIG }}  ./.config
-          cp ${{ env.KERNEL_CONFIG }} ${{ env.BUILD_OUTPUT_DIR }}/.config
-          cp ${{ env.BUILD_OUTPUT_DIR }}/.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
 
       - name: Build Kernel
         run: |
           make -j$(($(nproc)*2)) ARCH=${{ env.ARCH }} CC="ccache ${{ env.COMPILER }}" \
-            O=${{ env.BUILD_OUTPUT_DIR }} \
             V=1 2>&1 | tee build.log 
 
       - name: Archive Kernel Artifacts
         run: |
-          cd ${{ env.BUILD_OUTPUT_DIR }}
           tar -zcf ../kernel-${{ env.ARCH }}.tar.gz \
             arch/x86/boot/bzImage \
             vmlinux \
             System.map \
             result.config \
             modules.builtin \
-            ../build.log
+            ./build.log
 
 
       - name: Upload Kernel Artifacts
