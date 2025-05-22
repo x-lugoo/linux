@@ -33,6 +33,7 @@ jobs:
             git dwarves zstd
 
       - name: cleanup config
+        run: |
          make mrproper
          mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
          rm -rf ${{ env.BUILD_OUTPUT_DIR }}/*
