@@ -32,10 +32,13 @@ jobs:
             libelf-dev bc cpio \
             git dwarves zstd
 
-      - name: Configure Kernel
-        run: |
+      - name: cleanup config
          make mrproper
          mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
+         rm -rf ${{ env.BUILD_OUTPUT_DIR }}/*
+         
+      - name: Configure Kernel
+        run: |
          cp ${{ env.KERNEL_CONFIG }}  ./.config
          cp ./.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
     
