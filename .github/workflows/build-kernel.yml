@@ -16,12 +16,23 @@ jobs:
       KERNEL_CONFIG: "arch/x86/configs/x86_64_defconfig"
       BUILD_OUTPUT_DIR: "kernel-build"
       COMPILER: "gcc"
+      CCACHE_DIR: "/github/workspace/ccache_dir"
 
     steps:
       - name: Checkout Linux Source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt
+            ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/configure') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
 
       - name: Install Build Dependencies
         run: |
@@ -30,29 +41,40 @@ jobs:
             build-essential \
             flex bison libssl-dev \
             libelf-dev bc cpio \
-            git dwarves zstd
+            git dwarves zstd ccache
 
-      - name: cleanup config
+      - name: Setup ccache
         run: |
-         make mrproper
-         mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
-         rm -rf ${{ env.BUILD_OUTPUT_DIR }}/*
-         
+          ccache --set-config=cache_dir=${{ env.CCACHE_DIR }}
+          ccache --max-size=2G
+
+      - name: Prepare Build Directory
+        run: |
+          make mrproper
+          mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
+
       - name: Configure Kernel
         run: |
-         cp ${{ env.KERNEL_CONFIG }}  ./.config
-         cp ./.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
-    
+          cp ${{ env.KERNEL_CONFIG }} ${{ env.BUILD_OUTPUT_DIR }}/.config
+          cp ${{ env.BUILD_OUTPUT_DIR }}/.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
 
       - name: Build Kernel
         run: |
-          make -j$(nproc) O=${{ env.BUILD_OUTPUT_DIR }}
+          make -j$(($(nproc)*2)) ARCH=${{ env.ARCH }} CC="ccache ${{ env.COMPILER }}" \
+            O=${{ env.BUILD_OUTPUT_DIR }} \
+            V=1 2>&1 | tee build.log 
 
       - name: Archive Kernel Artifacts
         run: |
           cd ${{ env.BUILD_OUTPUT_DIR }}
           tar -zcf ../kernel-${{ env.ARCH }}.tar.gz \
-            arch/x86/boot/bzImage vmlinux System.map result.config
+            arch/x86/boot/bzImage \
+            vmlinux \
+            System.map \
+            result.config \
+            modules.builtin \
+            ../build.log
+
 
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
