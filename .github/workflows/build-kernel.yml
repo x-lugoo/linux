@@ -1,6 +1,7 @@
 name: Auto Build Linux Kernel on Push
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -33,7 +34,9 @@ jobs:
 
       - name: Configure Kernel
         run: |
-         cp ${{ env.KERNEL_CONFIG }}  ${{ env.BUILD_OUTPUT_DIR }}/.config
+         mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
+         cp ${{ env.KERNEL_CONFIG }}  ./.config
+         cp ./.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
     
 
       - name: Build Kernel
@@ -44,7 +47,7 @@ jobs:
         run: |
           cd ${{ env.BUILD_OUTPUT_DIR }}
           tar -zcf ../kernel-${{ env.ARCH }}.tar.gz \
-            arch/x86/boot/bzImage vmlinux System.map .config
+            arch/x86/boot/bzImage vmlinux System.map result.config
 
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
