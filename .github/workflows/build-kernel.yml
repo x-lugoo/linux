@@ -14,25 +14,13 @@ jobs:
     env:
       ARCH: "x86_64"
       KERNEL_CONFIG: "arch/x86/configs/x86_64_defconfig"
-      BUILD_OUTPUT_DIR: "kernel-build"
       COMPILER: "gcc"
-      CCACHE_DIR: "ccache_dir"
 
     steps:
       - name: Checkout Linux Source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Cache Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            /var/cache/apt
-            ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-apt-${{ hashFiles('**/configure') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
 
       - name: Install Build Dependencies
         run: |
@@ -41,27 +29,21 @@ jobs:
             build-essential \
             flex bison libssl-dev \
             libelf-dev bc cpio \
-            git dwarves zstd ccache
-
-      - name: Setup ccache
-        run: |
-          ccache --set-config=cache_dir=${{ env.CCACHE_DIR }}
-          ccache --max-size=2G
+            git dwarves
 
       - name: Prepare Build Directory
         run: |
           make mrproper
-          mkdir -p ${{ env.BUILD_OUTPUT_DIR }} # no used now
 
       - name: Configure Kernel
         run: |
           cp ${{ env.KERNEL_CONFIG }}  ./.config
-          make olddefconfig  ARCH=${{ env.ARCH }} CC="ccache ${{ env.COMPILER }}"
+          make olddefconfig  ARCH=${{ env.ARCH }}
           cp ./.config ./result.config
 
       - name: Build Kernel
         run: |
-          make -j$(($(nproc)*2)) ARCH=${{ env.ARCH }} CC="ccache ${{ env.COMPILER }}" \
+          make -j$(($(nproc)*2)) ARCH=${{ env.ARCH }} \
             V=1 2>&1 | tee build.log 
 
       - name: Archive Kernel Artifacts
