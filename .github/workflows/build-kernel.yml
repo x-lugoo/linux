@@ -56,6 +56,8 @@ jobs:
       - name: Configure Kernel
         run: |
           cp ${{ env.KERNEL_CONFIG }}  ./.config
+          make olddefconfig  ARCH=${{ env.ARCH }} CC="ccache ${{ env.COMPILER }}"
+          cp ./.config ./result.config
 
       - name: Build Kernel
         run: |
@@ -70,6 +72,7 @@ jobs:
             System.map \
             result.config \
             modules.builtin \
+            ./result.config \
             ./build.log
 
 
