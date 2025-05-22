@@ -1,0 +1,55 @@
+name: Auto Build Linux Kernel on Push
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-kernel:
+    name: Compile Linux Kernel
+    runs-on: ubuntu-latest
+
+    env:
+      ARCH: "x86_64"
+      KERNEL_CONFIG: "defconfig"
+      BUILD_OUTPUT_DIR: "kernel-build"
+      COMPILER: "gcc"
+
+    steps:
+      - name: Checkout Linux Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            flex bison libssl-dev \
+            libelf-dev bc cpio \
+            git dwarves zstd
+
+      - name: Configure Kernel
+        run: |
+          make ${{ env.ARCH }}_${{ env.KERNEL_CONFIG }} \
+            O=${{ env.BUILD_OUTPUT_DIR }}
+
+      - name: Build Kernel
+        run: |
+          make -j$(nproc) O=${{ env.BUILD_OUTPUT_DIR }}
+
+      - name: Archive Kernel Artifacts
+        run: |
+          cd ${{ env.BUILD_OUTPUT_DIR }}
+          tar --use-compress-program="zstd -T0" -cf ../kernel-${{ env.ARCH }}.tar.zst \
+            vmlinux System.map .config modules.builtin
+
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ env.ARCH }}-${{ github.sha }}
+          path: |
+            kernel-${{ env.ARCH }}.tar.zst
+            ${{ env.BUILD_OUTPUT_DIR }}/.config
