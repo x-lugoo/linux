@@ -72,8 +72,7 @@ jobs:
             System.map \
             result.config \
             modules.builtin \
-            ./result.config \
-            ./build.log
+            build.log
 
 
       - name: Upload Kernel Artifacts
