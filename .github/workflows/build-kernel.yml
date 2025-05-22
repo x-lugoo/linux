@@ -16,7 +16,7 @@ jobs:
       KERNEL_CONFIG: "arch/x86/configs/x86_64_defconfig"
       BUILD_OUTPUT_DIR: "kernel-build"
       COMPILER: "gcc"
-      CCACHE_DIR: "/github/workspace/ccache_dir"
+      CCACHE_DIR: "ccache_dir"
 
     steps:
       - name: Checkout Linux Source
@@ -55,6 +55,7 @@ jobs:
 
       - name: Configure Kernel
         run: |
+          cp ${{ env.KERNEL_CONFIG }}  ./.config
           cp ${{ env.KERNEL_CONFIG }} ${{ env.BUILD_OUTPUT_DIR }}/.config
           cp ${{ env.BUILD_OUTPUT_DIR }}/.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
 
