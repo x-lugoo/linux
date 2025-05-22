@@ -34,6 +34,7 @@ jobs:
 
       - name: Configure Kernel
         run: |
+         make mrproper
          mkdir -p ${{ env.BUILD_OUTPUT_DIR }}
          cp ${{ env.KERNEL_CONFIG }}  ./.config
          cp ./.config ${{ env.BUILD_OUTPUT_DIR }}/result.config
