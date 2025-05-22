@@ -12,7 +12,7 @@ jobs:
 
     env:
       ARCH: "x86_64"
-      KERNEL_CONFIG: "defconfig"
+      KERNEL_CONFIG: "arch/x86/configs/x86_64_defconfig"
       BUILD_OUTPUT_DIR: "kernel-build"
       COMPILER: "gcc"
 
@@ -33,8 +33,8 @@ jobs:
 
       - name: Configure Kernel
         run: |
-          make ${{ env.ARCH }}_${{ env.KERNEL_CONFIG }} \
-            O=${{ env.BUILD_OUTPUT_DIR }}
+         cp ${{ env.KERNEL_CONFIG }}  ${{ env.BUILD_OUTPUT_DIR }}/.config
+    
 
       - name: Build Kernel
         run: |
@@ -43,13 +43,12 @@ jobs:
       - name: Archive Kernel Artifacts
         run: |
           cd ${{ env.BUILD_OUTPUT_DIR }}
-          tar --use-compress-program="zstd -T0" -cf ../kernel-${{ env.ARCH }}.tar.zst \
-            vmlinux System.map .config modules.builtin
+          tar -zcf ../kernel-${{ env.ARCH }}.tar.gz \
+            arch/x86/boot/bzImage vmlinux System.map .config
 
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ env.ARCH }}-${{ github.sha }}
           path: |
-            kernel-${{ env.ARCH }}.tar.zst
-            ${{ env.BUILD_OUTPUT_DIR }}/.config
+            kernel-${{ env.ARCH }}.tar.gz
